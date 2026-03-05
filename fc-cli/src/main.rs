@@ -589,3 +589,272 @@ fn to_bundled_mode(mode: ResolveMode) -> BundledMode {
         ResolveMode::SystemThenBundled => BundledMode::SystemThenBundled,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    // ==================== Argument Parsing Tests ====================
+
+    /// Verify minimal required arguments are parsed correctly
+    #[test]
+    fn test_parse_start_minimal_args() {
+        let cli = Cli::try_parse_from([
+            "fc-cli",
+            "start",
+            "--kernel",
+            "/path/to/vmlinux",
+            "--rootfs",
+            "/path/to/rootfs.ext4",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Start(args) => {
+                assert_eq!(args.kernel, PathBuf::from("/path/to/vmlinux"));
+                assert_eq!(args.rootfs, PathBuf::from("/path/to/rootfs.ext4"));
+                // Verify default values
+                assert_eq!(args.vcpu_count, 1);
+                assert_eq!(args.mem_size_mib, 256);
+                assert!(!args.detach);
+                assert!(!args.rootfs_read_only);
+            }
+            _ => panic!("expected Start command"),
+        }
+    }
+
+    /// Verify all VM configuration options are parsed correctly
+    #[test]
+    fn test_parse_start_with_all_vm_options() {
+        let cli = Cli::try_parse_from([
+            "fc-cli",
+            "start",
+            "--kernel",
+            "/vmlinux",
+            "--rootfs",
+            "/rootfs.ext4",
+            "--vcpu-count",
+            "4",
+            "--mem-size-mib",
+            "1024",
+            "--smt",
+            "--track-dirty-pages",
+            "--boot-args",
+            "console=ttyS0",
+            "--rootfs-read-only",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Start(args) => {
+                assert_eq!(args.vcpu_count, 4);
+                assert_eq!(args.mem_size_mib, 1024);
+                assert!(args.smt);
+                assert!(args.track_dirty_pages);
+                assert_eq!(args.boot_args, Some("console=ttyS0".to_string()));
+                assert!(args.rootfs_read_only);
+            }
+            _ => panic!("expected Start command"),
+        }
+    }
+
+    /// Verify jailer backend options are parsed correctly
+    #[test]
+    fn test_parse_jailer_backend_options() {
+        let cli = Cli::try_parse_from([
+            "fc-cli",
+            "start",
+            "--backend",
+            "jailer",
+            "--uid",
+            "1000",
+            "--gid",
+            "1000",
+            "--kernel",
+            "/vmlinux",
+            "--rootfs",
+            "/rootfs.ext4",
+            "--id",
+            "my-vm",
+            "--netns",
+            "/var/run/netns/my-ns",
+            "--daemonize",
+            "--detach",
+            "--new-pid-ns",
+            "--cgroup",
+            "cpu.shares=512",
+            "--cgroup",
+            "memory.limit_in_bytes=536870912",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Start(args) => {
+                assert!(matches!(args.backend, StartBackend::Jailer));
+                assert_eq!(args.uid, Some(1000));
+                assert_eq!(args.gid, Some(1000));
+                assert_eq!(args.id, Some("my-vm".to_string()));
+                assert_eq!(args.netns, Some("/var/run/netns/my-ns".to_string()));
+                assert!(args.daemonize);
+                assert!(args.detach);
+                assert!(args.new_pid_ns);
+                assert_eq!(args.cgroups.len(), 2);
+            }
+            _ => panic!("expected Start command"),
+        }
+    }
+
+    /// Verify resolve command parsing
+    #[test]
+    fn test_parse_resolve_command() {
+        let cli =
+            Cli::try_parse_from(["fc-cli", "resolve", "firecracker", "--mode", "system-only"])
+                .unwrap();
+
+        match cli.command {
+            Commands::Resolve(args) => {
+                assert!(matches!(args.target, ResolveTarget::Firecracker));
+                assert!(matches!(args.runtime.mode, ResolveMode::SystemOnly));
+            }
+            _ => panic!("expected Resolve command"),
+        }
+    }
+
+    /// Verify platform command parsing
+    #[test]
+    fn test_parse_platform_command() {
+        let cli = Cli::try_parse_from(["fc-cli", "platform"]).unwrap();
+        assert!(matches!(cli.command, Commands::Platform));
+    }
+
+    // ==================== Input Validation Tests ====================
+
+    /// Missing kernel argument should fail
+    #[test]
+    fn test_missing_required_kernel_arg() {
+        let result = Cli::try_parse_from(["fc-cli", "start", "--rootfs", "/rootfs.ext4"]);
+        assert!(result.is_err());
+    }
+
+    /// Missing rootfs argument should fail
+    #[test]
+    fn test_missing_required_rootfs_arg() {
+        let result = Cli::try_parse_from(["fc-cli", "start", "--kernel", "/vmlinux"]);
+        assert!(result.is_err());
+    }
+
+    /// Invalid backend value should fail
+    #[test]
+    fn test_invalid_backend_value() {
+        let result = Cli::try_parse_from([
+            "fc-cli",
+            "start",
+            "--backend",
+            "invalid",
+            "--kernel",
+            "/vmlinux",
+            "--rootfs",
+            "/rootfs.ext4",
+        ]);
+        assert!(result.is_err());
+    }
+
+    // ==================== Helper Function Tests ====================
+
+    /// Parse chroot root from socket path - valid path
+    #[test]
+    fn test_chroot_root_from_socket_valid() {
+        let socket = Path::new("/srv/jailer/firecracker/test-vm/root/run/firecracker.socket");
+        let result = chroot_root_from_socket(socket).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("/srv/jailer/firecracker/test-vm/root")
+        );
+    }
+
+    /// Parse chroot root from socket path - minimal valid path
+    #[test]
+    fn test_chroot_root_from_socket_minimal_path() {
+        let socket = Path::new("/root/run/firecracker.socket");
+        let result = chroot_root_from_socket(socket).unwrap();
+        assert_eq!(result, PathBuf::from("/root"));
+    }
+
+    /// Parse chroot root from socket path - too short should fail
+    #[test]
+    fn test_chroot_root_from_socket_too_short() {
+        let socket = Path::new("firecracker.socket");
+        let result = chroot_root_from_socket(socket);
+        assert!(result.is_err());
+    }
+
+    /// Path to string conversion
+    #[test]
+    fn test_path_to_string() {
+        let path = Path::new("/path/to/file.ext");
+        assert_eq!(path_to_string(path), "/path/to/file.ext");
+    }
+
+    /// Backend enum to string conversion
+    #[test]
+    fn test_backend_as_str() {
+        assert_eq!(backend_as_str(StartBackend::Firecracker), "firecracker");
+        assert_eq!(backend_as_str(StartBackend::Jailer), "jailer");
+    }
+
+    /// ResolveMode to BundledMode conversion
+    #[test]
+    fn test_to_bundled_mode() {
+        assert!(matches!(
+            to_bundled_mode(ResolveMode::BundledOnly),
+            BundledMode::BundledOnly
+        ));
+        assert!(matches!(
+            to_bundled_mode(ResolveMode::SystemOnly),
+            BundledMode::SystemOnly
+        ));
+        assert!(matches!(
+            to_bundled_mode(ResolveMode::BundledThenSystem),
+            BundledMode::BundledThenSystem
+        ));
+        assert!(matches!(
+            to_bundled_mode(ResolveMode::SystemThenBundled),
+            BundledMode::SystemThenBundled
+        ));
+    }
+
+    // ==================== Default Values Tests ====================
+
+    /// Verify all default values are set correctly
+    #[test]
+    fn test_default_values() {
+        let cli = Cli::try_parse_from([
+            "fc-cli",
+            "start",
+            "--kernel",
+            "/vmlinux",
+            "--rootfs",
+            "/rootfs.ext4",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Start(args) => {
+                assert_eq!(args.rootfs_id, "rootfs");
+                assert!(!args.rootfs_read_only);
+                assert_eq!(args.socket_path, PathBuf::from("/tmp/firecracker.socket"));
+                assert_eq!(args.socket_timeout_secs, 5);
+                assert_eq!(args.socket_poll_interval_ms, 50);
+                assert!(!args.no_seccomp);
+                assert!(!args.smt);
+                assert!(!args.track_dirty_pages);
+                assert!(matches!(args.backend, StartBackend::Firecracker));
+                assert!(args.boot_args.is_none());
+                assert!(args.initrd.is_none());
+                assert!(args.id.is_none());
+            }
+            _ => panic!("expected Start command"),
+        }
+    }
+}
