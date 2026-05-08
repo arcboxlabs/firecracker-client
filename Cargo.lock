@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "fc-api"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "futures",
  "openapiv3",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "fc-cli"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "clap",
  "firecracker",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "fc-sdk"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "fc-api",
  "libc",
@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "firecracker"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "fc-api",
  "fc-sdk",

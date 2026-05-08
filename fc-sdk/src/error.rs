@@ -2,6 +2,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 
+use crate::vm_id::VmIdError;
+
 /// Errors returned by the Firecracker SDK.
 #[derive(Debug)]
 pub enum Error {
@@ -29,6 +31,9 @@ pub enum Error {
     /// Missing required configuration.
     MissingConfig(&'static str),
 
+    /// Caller supplied an identifier that Firecracker would reject.
+    InvalidVmId(VmIdError),
+
     /// Other error.
     Other(String),
 }
@@ -41,6 +46,7 @@ impl std::error::Error for Error {
             Self::Http(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::SpawnFailed(e) => Some(e),
+            Self::InvalidVmId(e) => Some(e),
             _ => None,
         }
     }
@@ -62,6 +68,7 @@ impl fmt::Display for Error {
             }
             Self::ProcessExited(None) => write!(f, "process exited unexpectedly"),
             Self::MissingConfig(field) => write!(f, "missing required configuration: {field}"),
+            Self::InvalidVmId(e) => write!(f, "invalid VM id: {e}"),
             Self::Other(msg) => write!(f, "{msg}"),
         }
     }
@@ -88,6 +95,12 @@ impl From<reqwest::Error> for Error {
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+impl From<VmIdError> for Error {
+    fn from(err: VmIdError) -> Self {
+        Self::InvalidVmId(err)
     }
 }
 

@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use fc_sdk::{FirecrackerProcessBuilder, JailerProcessBuilder};
+use fc_sdk::{FirecrackerProcessBuilder, JailerProcessBuilder, VmId};
 use sha2::{Digest, Sha256};
 
 /// Errors from bundled runtime resolution.
@@ -253,12 +253,7 @@ impl BundledRuntimeOptions {
     }
 
     /// Build a [`JailerProcessBuilder`] using bundled resolution.
-    pub fn jailer_builder(
-        &self,
-        id: impl Into<String>,
-        uid: u32,
-        gid: u32,
-    ) -> Result<JailerProcessBuilder> {
+    pub fn jailer_builder(&self, id: VmId, uid: u32, gid: u32) -> Result<JailerProcessBuilder> {
         let jailer_bin = self.resolve_jailer_bin()?;
         let firecracker_bin = self.resolve_firecracker_bin()?;
         Ok(JailerProcessBuilder::new(
@@ -681,7 +676,9 @@ mod tests {
             .release_version(version);
 
         let _fc_builder = opts.firecracker_builder("/tmp/fc.sock").unwrap();
-        let _jailer_builder = opts.jailer_builder("vm-1", 1000, 1000).unwrap();
+        let _jailer_builder = opts
+            .jailer_builder(VmId::new("vm-1").unwrap(), 1000, 1000)
+            .unwrap();
     }
 
     #[test]

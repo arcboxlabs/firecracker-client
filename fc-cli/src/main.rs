@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use firecracker::runtime::bundled::{BundledMode, BundledRuntimeOptions};
 use firecracker::sdk::{
-    FirecrackerProcess, FirecrackerProcessBuilder, JailerProcessBuilder, types,
+    FirecrackerProcess, FirecrackerProcessBuilder, JailerProcessBuilder, VmId, types,
 };
 
 #[derive(Debug, Parser)]
@@ -88,7 +88,7 @@ struct StartArgs {
     ///
     /// For `--backend jailer`, this is the jailer `--id` and defaults to `fc-cli-vm`.
     #[arg(long)]
-    id: Option<String>,
+    id: Option<VmId>,
 
     /// Jailer UID (required when `--backend jailer`).
     #[arg(long)]
@@ -363,7 +363,10 @@ async fn spawn_process(
             Ok(builder.spawn().await?)
         }
         StartBackend::Jailer => {
-            let id = args.id.clone().unwrap_or_else(|| "fc-cli-vm".to_owned());
+            let id = args
+                .id
+                .clone()
+                .unwrap_or_else(|| VmId::from_sanitized("fc-cli-vm"));
             let uid = args
                 .uid
                 .ok_or_else(|| invalid_input("--uid is required when --backend jailer"))?;

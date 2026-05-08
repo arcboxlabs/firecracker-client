@@ -7,10 +7,11 @@
 //!
 //! ```no_run
 //! use fc_sdk::process::FirecrackerProcessBuilder;
+//! use fc_sdk::VmId;
 //!
 //! # async fn example() -> fc_sdk::Result<()> {
 //! let process = FirecrackerProcessBuilder::new("firecracker", "/tmp/firecracker.sock")
-//!     .id("my-vm")
+//!     .id(VmId::new("my-vm")?)
 //!     .spawn()
 //!     .await?;
 //!
@@ -38,12 +39,13 @@
 //!
 //! ```no_run
 //! use fc_sdk::process::JailerProcessBuilder;
+//! use fc_sdk::VmId;
 //!
 //! # async fn example() -> fc_sdk::Result<()> {
 //! let process = JailerProcessBuilder::new(
 //!     "jailer",
 //!     "/usr/bin/firecracker",
-//!     "my-vm",
+//!     VmId::new("my-vm")?,
 //!     1000,
 //!     1000,
 //! )
@@ -78,6 +80,7 @@ use tokio::time::{sleep, timeout as tokio_timeout};
 
 use crate::builder::VmBuilder;
 use crate::error::{Error, Result};
+use crate::vm_id::VmId;
 
 // =============================================================================
 // Socket Polling
@@ -109,7 +112,7 @@ async fn wait_for_socket(
 pub struct FirecrackerProcessBuilder {
     firecracker_bin: PathBuf,
     socket_path: PathBuf,
-    id: Option<String>,
+    id: Option<VmId>,
     seccomp_filter: Option<PathBuf>,
     no_seccomp: bool,
     boot_timer: bool,
@@ -151,8 +154,11 @@ impl FirecrackerProcessBuilder {
     }
 
     /// Set the VM identifier.
-    pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+    ///
+    /// Takes a pre-validated [`VmId`] — build one via [`VmId::new`] (strict)
+    /// or [`VmId::from_sanitized`] (infallible projection).
+    pub fn id(mut self, id: VmId) -> Self {
+        self.id = Some(id);
         self
     }
 
@@ -249,7 +255,7 @@ impl FirecrackerProcessBuilder {
 
         if let Some(id) = &self.id {
             args.push("--id".to_owned());
-            args.push(id.clone());
+            args.push(id.as_str().to_owned());
         }
 
         if let Some(filter) = &self.seccomp_filter {
@@ -354,7 +360,7 @@ impl FirecrackerProcessBuilder {
 pub struct JailerProcessBuilder {
     jailer_bin: PathBuf,
     exec_file: PathBuf,
-    id: String,
+    id: VmId,
     uid: u32,
     gid: u32,
     chroot_base_dir: PathBuf,
@@ -372,17 +378,21 @@ pub struct JailerProcessBuilder {
 
 impl JailerProcessBuilder {
     /// Create a new Jailer builder.
+    ///
+    /// `id` must be a pre-validated [`VmId`] — the jailer applies the same
+    /// Firecracker `--id` rules and also uses the value as a chroot path
+    /// component, so it has to satisfy the validator.
     pub fn new(
         jailer_bin: impl Into<PathBuf>,
         exec_file: impl Into<PathBuf>,
-        id: impl Into<String>,
+        id: VmId,
         uid: u32,
         gid: u32,
     ) -> Self {
         Self {
             jailer_bin: jailer_bin.into(),
             exec_file: exec_file.into(),
-            id: id.into(),
+            id,
             uid,
             gid,
             chroot_base_dir: PathBuf::from("/srv/jailer"),
@@ -476,7 +486,7 @@ impl JailerProcessBuilder {
             .to_string_lossy();
         self.chroot_base_dir
             .join(exec_name.as_ref())
-            .join(&self.id)
+            .join(self.id.as_str())
             .join("root")
             .join("run")
             .join("firecracker.socket")
@@ -488,7 +498,7 @@ impl JailerProcessBuilder {
             "--exec-file".to_owned(),
             self.exec_file.display().to_string(),
             "--id".to_owned(),
-            self.id.clone(),
+            self.id.as_str().to_owned(),
             "--uid".to_owned(),
             self.uid.to_string(),
             "--gid".to_owned(),
@@ -720,7 +730,7 @@ mod tests {
     #[test]
     fn test_firecracker_builder_args() {
         let builder = FirecrackerProcessBuilder::new("/usr/bin/firecracker", "/tmp/fc.sock")
-            .id("test-vm")
+            .id(VmId::new("test-vm").unwrap())
             .no_seccomp(true)
             .boot_timer(true)
             .log_path("/var/log/fc.log")
@@ -759,7 +769,7 @@ mod tests {
         let builder = JailerProcessBuilder::new(
             "/usr/bin/jailer",
             "/usr/bin/firecracker",
-            "my-vm",
+            VmId::new("my-vm").unwrap(),
             1000,
             1000,
         );
@@ -774,7 +784,7 @@ mod tests {
         let builder = JailerProcessBuilder::new(
             "/usr/bin/jailer",
             "/usr/bin/firecracker",
-            "my-vm",
+            VmId::new("my-vm").unwrap(),
             1000,
             1000,
         )
@@ -790,7 +800,7 @@ mod tests {
         let builder = JailerProcessBuilder::new(
             "/usr/bin/jailer",
             "/usr/bin/firecracker",
-            "my-vm",
+            VmId::new("my-vm").unwrap(),
             1000,
             1000,
         )

@@ -68,6 +68,7 @@ pub mod connection;
 pub mod error;
 pub mod process;
 pub mod vm;
+pub mod vm_id;
 
 pub use builder::VmBuilder;
 pub use error::{Error, Result};
@@ -75,6 +76,7 @@ pub use process::{
     DetachedFirecrackerProcess, FirecrackerProcess, FirecrackerProcessBuilder, JailerProcessBuilder,
 };
 pub use vm::{Vm, restore, restore_with_client};
+pub use vm_id::{VmId, VmIdError};
 
 /// Re-export API types for convenience.
 pub use fc_api::types;
