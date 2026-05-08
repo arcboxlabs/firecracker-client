@@ -54,7 +54,9 @@ pub enum VmIdError {
     InvalidChar {
         /// The offending character.
         c: char,
-        /// Byte-index of the offending char in the original input.
+        /// Char index of the offending char in the original input. Matches the
+        /// `position` reported by upstream's `validate_instance_id`, which uses
+        /// `chars().enumerate()` rather than byte offsets.
         position: usize,
     },
     /// The identifier's byte length was outside the accepted range.
@@ -83,7 +85,7 @@ impl VmId {
                 max: MAX_LEN,
             });
         }
-        for (position, c) in input.char_indices() {
+        for (position, c) in input.chars().enumerate() {
             if !is_valid_char(c) {
                 return Err(VmIdError::InvalidChar { c, position });
             }
@@ -226,6 +228,19 @@ mod tests {
         // `is_alphanumeric` is Unicode-aware; firecracker's own validator
         // accepts these, so the SDK must too.
         VmId::new("漢字-1").unwrap();
+    }
+
+    #[test]
+    fn new_reports_position_as_char_index_to_match_upstream() {
+        // Upstream uses `chars().enumerate()`, so an underscore after two
+        // multi-byte chars is reported at char index 2, not byte index 6.
+        assert_eq!(
+            VmId::new("漢字_1").unwrap_err(),
+            VmIdError::InvalidChar {
+                c: '_',
+                position: 2
+            }
+        );
     }
 
     #[test]
