@@ -12,6 +12,7 @@
 //! # async fn example() -> fc_sdk::Result<()> {
 //! let process = FirecrackerProcessBuilder::new("firecracker", "/tmp/firecracker.sock")
 //!     .id(VmId::new("my-vm")?)
+//!     .console_path("/tmp/firecracker-console.log")
 //!     .spawn()
 //!     .await?;
 //!
@@ -72,7 +73,9 @@
 //! # }
 //! ```
 
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::process::{Child, Command};
@@ -127,6 +130,10 @@ pub struct FirecrackerProcessBuilder {
     socket_timeout: Duration,
     socket_poll_interval: Duration,
     cleanup_socket: bool,
+    console_path: Option<PathBuf>,
+    stdin: Option<Stdio>,
+    stdout: Option<Stdio>,
+    stderr: Option<Stdio>,
 }
 
 impl FirecrackerProcessBuilder {
@@ -150,6 +157,10 @@ impl FirecrackerProcessBuilder {
             socket_timeout: Duration::from_secs(5),
             socket_poll_interval: Duration::from_millis(50),
             cleanup_socket: true,
+            console_path: None,
+            stdin: None,
+            stdout: None,
+            stderr: None,
         }
     }
 
@@ -246,6 +257,58 @@ impl FirecrackerProcessBuilder {
         self
     }
 
+    /// Route the guest serial console (firecracker's stdout) and any stderr
+    /// diagnostics to `path`.
+    ///
+    /// Firecracker pipes the guest ttyS0 to its own stdout, so when the
+    /// kernel cmdline includes `console=ttyS0` the boot log and any later
+    /// serial output land wherever the spawned firecracker process's stdout
+    /// goes. This file is opened in create+append mode at [`spawn`] time.
+    ///
+    /// Explicit [`stdout`] / [`stderr`] overrides take precedence per-channel;
+    /// [`stdin`] is left at the process default regardless.
+    ///
+    /// [`spawn`]: Self::spawn
+    /// [`stdin`]: Self::stdin
+    /// [`stdout`]: Self::stdout
+    /// [`stderr`]: Self::stderr
+    pub fn console_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.console_path = Some(path.into());
+        self
+    }
+
+    /// Override stdin for the spawned Firecracker process.
+    ///
+    /// Passed through verbatim to [`tokio::process::Command::stdin`].
+    pub fn stdin(mut self, stdio: Stdio) -> Self {
+        self.stdin = Some(stdio);
+        self
+    }
+
+    /// Override stdout for the spawned Firecracker process.
+    ///
+    /// Passed through verbatim to [`tokio::process::Command::stdout`]. When
+    /// set, this takes precedence over [`console_path`] for the stdout
+    /// channel.
+    ///
+    /// [`console_path`]: Self::console_path
+    pub fn stdout(mut self, stdio: Stdio) -> Self {
+        self.stdout = Some(stdio);
+        self
+    }
+
+    /// Override stderr for the spawned Firecracker process.
+    ///
+    /// Passed through verbatim to [`tokio::process::Command::stderr`]. When
+    /// set, this takes precedence over [`console_path`] for the stderr
+    /// channel.
+    ///
+    /// [`console_path`]: Self::console_path
+    pub fn stderr(mut self, stdio: Stdio) -> Self {
+        self.stderr = Some(stdio);
+        self
+    }
+
     /// Build the command-line arguments for the Firecracker process.
     fn build_args(&self) -> Vec<String> {
         let mut args = vec![
@@ -312,15 +375,23 @@ impl FirecrackerProcessBuilder {
     }
 
     /// Spawn the Firecracker process and wait for the socket to become available.
-    pub async fn spawn(self) -> Result<FirecrackerProcess> {
+    pub async fn spawn(mut self) -> Result<FirecrackerProcess> {
         if self.cleanup_socket && self.socket_path.exists() {
             std::fs::remove_file(&self.socket_path).ok();
         }
 
-        let child = Command::new(&self.firecracker_bin)
-            .args(self.build_args())
-            .spawn()
-            .map_err(Error::SpawnFailed)?;
+        let args = self.build_args();
+        let mut command = Command::new(&self.firecracker_bin);
+        command.args(args);
+        apply_stdio(
+            &mut command,
+            self.stdin.take(),
+            self.stdout.take(),
+            self.stderr.take(),
+            self.console_path.as_deref(),
+        )?;
+
+        let child = command.spawn().map_err(Error::SpawnFailed)?;
 
         let pid = child.id();
         let socket_path = self.socket_path.clone();
@@ -350,6 +421,61 @@ impl FirecrackerProcessBuilder {
 
         Ok(process)
     }
+}
+
+/// Wire optional stdio overrides and `console_path` into a [`Command`].
+///
+/// Resolution per channel: an explicit override (`stdin` / `stdout` /
+/// `stderr`) wins; otherwise `console_path` fills stdout + stderr from the
+/// same file (opened in create+append mode, cloned for the second channel);
+/// otherwise the channel is left at `Command`'s default (inherit from the
+/// parent process).
+fn apply_stdio(
+    command: &mut Command,
+    stdin: Option<Stdio>,
+    stdout: Option<Stdio>,
+    stderr: Option<Stdio>,
+    console_path: Option<&Path>,
+) -> Result<()> {
+    if let Some(s) = stdin {
+        command.stdin(s);
+    }
+
+    let open_console = || -> std::io::Result<std::fs::File> {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(console_path.expect("called only when console_path is set"))
+    };
+
+    match (stdout, stderr, console_path) {
+        (Some(out), Some(err), _) => {
+            command.stdout(out);
+            command.stderr(err);
+        }
+        (Some(out), None, Some(_)) => {
+            command.stdout(out);
+            command.stderr(Stdio::from(open_console()?));
+        }
+        (Some(out), None, None) => {
+            command.stdout(out);
+        }
+        (None, Some(err), Some(_)) => {
+            command.stdout(Stdio::from(open_console()?));
+            command.stderr(err);
+        }
+        (None, Some(err), None) => {
+            command.stderr(err);
+        }
+        (None, None, Some(_)) => {
+            let file = open_console()?;
+            command.stdout(Stdio::from(file.try_clone()?));
+            command.stderr(Stdio::from(file));
+        }
+        (None, None, None) => {}
+    }
+
+    Ok(())
 }
 
 // =============================================================================
@@ -553,6 +679,10 @@ impl JailerProcessBuilder {
     }
 
     /// Spawn the Jailer process and wait for the Firecracker socket to become available.
+    // TODO: mirror FirecrackerProcessBuilder's `console_path` / `stdin` / `stdout`
+    // / `stderr` knobs once a caller actually needs to capture stdio through the
+    // jailer chroot. Jailer's optional `--daemonize` detaches stdio, so the
+    // semantics need a bit more care than the direct case.
     pub async fn spawn(self) -> Result<FirecrackerProcess> {
         let socket_path = self.socket_path();
         let socket_timeout = self.socket_timeout;
@@ -726,6 +856,100 @@ impl Drop for FirecrackerProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn apply_stdio_routes_both_channels_to_console_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let console = temp.path().join("console.log");
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "printf OUT; printf ERR >&2"]);
+        apply_stdio(&mut cmd, None, None, None, Some(&console)).unwrap();
+
+        let status = cmd.spawn().unwrap().wait().await.unwrap();
+        assert!(status.success());
+
+        let contents = std::fs::read_to_string(&console).unwrap();
+        // stdout + stderr interleave is not ordering-stable, but both channels
+        // must have reached the single file.
+        assert!(
+            contents.contains("OUT"),
+            "missing stdout marker in {contents:?}"
+        );
+        assert!(
+            contents.contains("ERR"),
+            "missing stderr marker in {contents:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_stdio_explicit_channel_overrides_console_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let console = temp.path().join("console.log");
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "printf OUT; printf ERR >&2"]);
+        // Send stdout to /dev/null; stderr still falls through to console_path.
+        apply_stdio(&mut cmd, None, Some(Stdio::null()), None, Some(&console)).unwrap();
+
+        let status = cmd.spawn().unwrap().wait().await.unwrap();
+        assert!(status.success());
+
+        let contents = std::fs::read_to_string(&console).unwrap();
+        assert!(
+            !contents.contains("OUT"),
+            "stdout override leaked into console file: {contents:?}"
+        );
+        assert!(
+            contents.contains("ERR"),
+            "missing stderr marker in {contents:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_stdio_appends_to_existing_console_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let console = temp.path().join("console.log");
+        std::fs::write(&console, "prior\n").unwrap();
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "printf after"]);
+        apply_stdio(&mut cmd, None, None, None, Some(&console)).unwrap();
+
+        let status = cmd.spawn().unwrap().wait().await.unwrap();
+        assert!(status.success());
+
+        let contents = std::fs::read_to_string(&console).unwrap();
+        assert!(
+            contents.starts_with("prior\n"),
+            "append mode clobbered file: {contents:?}"
+        );
+        assert!(
+            contents.ends_with("after"),
+            "append mode dropped new bytes: {contents:?}"
+        );
+    }
+
+    #[test]
+    fn apply_stdio_returns_io_error_when_console_parent_does_not_exist() {
+        let mut cmd = Command::new("/bin/true");
+        let missing = PathBuf::from("/tmp/fc-sdk-apply-stdio-nonexistent-parent/console.log");
+        let err = apply_stdio(&mut cmd, None, None, None, Some(&missing))
+            .expect_err("missing parent dir must surface as Io error");
+        assert!(
+            matches!(err, Error::Io(_)),
+            "unexpected error variant: {err:?}"
+        );
+    }
+
+    #[test]
+    fn apply_stdio_noop_when_no_overrides_or_console_path() {
+        // Smoke test: the no-config path must not error, must not touch
+        // filesystem, and leaves the command free to inherit the parent's
+        // stdio on spawn.
+        let mut cmd = Command::new("/bin/true");
+        apply_stdio(&mut cmd, None, None, None, None).unwrap();
+    }
 
     #[test]
     fn test_firecracker_builder_args() {

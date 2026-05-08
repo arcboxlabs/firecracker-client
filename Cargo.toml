@@ -4,16 +4,16 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["ArcBox Labs <oss@arcbox.dev>", "AprilNEA <dev@aprilnea.me>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/arcboxlabs/firecracker-client"
 
 [workspace.dependencies]
-firecracker = { version = "0.3.0", path = "." }
-fc-api = { version = "0.3.0", path = "fc-api" }
-fc-sdk = { version = "0.3.0", path = "fc-sdk" }
-fc-cli = { version = "0.3.0", path = "fc-cli" }
+firecracker = { version = "0.3.1", path = "." }
+fc-api = { version = "0.3.1", path = "fc-api" }
+fc-sdk = { version = "0.3.1", path = "fc-sdk" }
+fc-cli = { version = "0.3.1", path = "fc-cli" }
 openapiv3 = "2"
 progenitor = "0.11"
 progenitor-client = "0.11"
